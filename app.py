@@ -64,14 +64,33 @@ if "current_page" not in st.session_state:
     st.session_state.current_page = 1
 if "docs_per_page" not in st.session_state:
     st.session_state.docs_per_page = 5
+if "conversation_context" not in st.session_state:
+    st.session_state.conversation_context = []
 
 # Load statistics
 stats = persistence_manager.load_stats()
 if "conversation_count" not in st.session_state:
     st.session_state.conversation_count = stats.get("conversation_count", 0)
 
-# Page configuration
-st.set_page_config(page_title="Document Q&A", layout="wide")
+# Page configuration with hidden menu and footer
+st.set_page_config(
+    page_title="Document Q&A",
+    layout="wide",
+    menu_items={}
+)
+
+# Hide Streamlit style elements
+hide_streamlit_style = """
+<style>
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+.stDeployButton {display:none;}
+.viewerBadge_container__1QSob {display: none;}
+.viewerBadge_link__1S137 {display: none;}
+.viewerBadge_text__1JaDK {display: none;}
+</style>
+"""
+st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
 # Custom CSS for chat-like interface
 st.markdown("""
@@ -266,8 +285,8 @@ if query:
                 stats = {"conversation_count": st.session_state.conversation_count}
                 persistence_manager.save_stats(stats)
                 
-                # Get relevant document chunks
-                relevant_chunks = vector_store.similarity_search(query, k=1)
+                # Get relevant document chunks - increase to 3 chunks for more context
+                relevant_chunks = vector_store.similarity_search(query, k=3)
                 
                 if not relevant_chunks:
                     response_text = "No relevant information found in the documents."
@@ -277,20 +296,75 @@ if query:
                     context = "\n\n".join([chunk["page_content"] for chunk in relevant_chunks])
                     sources = [chunk["metadata"].get("source", "Unknown") for chunk in relevant_chunks]
                     
+                    # Build conversation history string
+                    conversation_history = ""
+                    if st.session_state.conversation_context:
+                        conversation_history = "Previous conversation:\n"
+                        for i, exchange in enumerate(st.session_state.conversation_context[-3:]):  # Last 3 exchanges
+                            conversation_history += f"User: {exchange['user']}\n"
+                            conversation_history += f"Assistant: {exchange['assistant']}\n\n"
+                    
                     try:
-                        # Generate response using Gemini
+                        # Generate response using Gemini with better parameters
                         model = genai.GenerativeModel('gemini-1.5-flash')
-                        prompt = f"""
-                        Answer the question based ONLY on the following context:
+                        generation_config = {
+                            "temperature": 0.1,  # Lower temperature for more factual responses
+                            "top_p": 0.95,
+                            "top_k": 40,
+                            "max_output_tokens": 1024,
+                        }
                         
-                        {context}
+                        # Create improved prompt with better instructions
+                        if conversation_history:
+                            prompt = f"""
+                            You are a helpful document assistant. Answer the question based ONLY on the document context provided below.
+                            Be specific and extract relevant information directly from the context.
+                            
+                            DOCUMENT CONTEXT:
+                            ```
+                            {context}
+                            ```
+                            
+                            PREVIOUS CONVERSATION:
+                            {conversation_history}
+                            
+                            CURRENT QUESTION: {query}
+                            
+                            INSTRUCTIONS:
+                            1. Answer ONLY based on information in the DOCUMENT CONTEXT
+                            2. If the answer is not in the context, say "I don't have enough information to answer this question."
+                            3. Provide a 2 line answer if you can
+                            4. Include specific details from the document when possible
+                            5. Do not make up information
+                            
+                            YOUR ANSWER:
+                            """
+                        else:
+                            prompt = f"""
+                            You are a helpful document assistant. Answer the question based ONLY on the document context provided below.
+                            Be specific and extract relevant information directly from the context.
+                            
+                            DOCUMENT CONTEXT:
+                            ```
+                            {context}
+                            ```
+                            
+                            QUESTION: {query}
+                            
+                            INSTRUCTIONS:
+                            1. Answer ONLY based on information in the DOCUMENT CONTEXT
+                            2. If the answer is not in the context, say "I don't have enough information to answer this question."
+                            3. Provide a 2 line answer if you can
+                            4. Include specific details from the document when possible
+                            5. Do not make up information
+                            
+                            YOUR ANSWER:
+                            """
                         
-                        Question: {query}
-                        
-                        If the answer cannot be found in the context, say "I don't have enough information to answer this question."
-                        """
-                        
-                        response = model.generate_content(prompt)
+                        response = model.generate_content(
+                            prompt,
+                            generation_config=generation_config
+                        )
                         response_text = response.text
                         
                     except Exception as e:
@@ -318,9 +392,36 @@ if query:
                     "response": response_text,
                     "sources": sources
                 })
+                
+                # Update conversation context for next exchanges
+                st.session_state.conversation_context.append({
+                    "user": query,
+                    "assistant": response_text
+                })
+                
+                # Limit context length to prevent token overflow
+                if len(st.session_state.conversation_context) > 5:  # Keep last 5 exchanges
+                    st.session_state.conversation_context.pop(0)
+                    
+                # Show indicator if using conversation history
+                if len(st.session_state.conversation_context) > 1:
+                    with st.expander("Using conversation context"):
+                        st.write("This response considers your previous questions and answers.")
+                        for i, exchange in enumerate(st.session_state.conversation_context[:-1]):
+                            st.write(f"**Previous Q{i+1}:** {exchange['user']}")
+                            st.write(f"**Previous A{i+1}:** {exchange['assistant']}")
+                            st.write("---")
 
-# Add a button to clear chat history
+# Add buttons to manage conversation
 if st.session_state.messages:
-    if st.sidebar.button("Clear Chat History"):
-        st.session_state.messages = []
-        st.rerun()
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("Clear Chat History"):
+            st.session_state.messages = []
+            st.session_state.conversation_context = []
+            st.rerun()
+    with col2:
+        if st.button("New Conversation"):
+            st.session_state.conversation_context = []
+            st.session_state.messages = []
+            st.rerun()
