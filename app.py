@@ -4,6 +4,8 @@ import tempfile
 import logging
 import time
 import math
+import argparse
+import sys
 from dotenv import load_dotenv
 import google.generativeai as genai
 from document_processor import process_document, get_document_text
@@ -44,7 +46,11 @@ else:
     logging.info("Running locally, using local file storage")
 
 # Initialize vector store
-vector_store = VectorStore(persist_directory=CHROMA_DIR)
+vector_store = VectorStore(
+    persist_directory=CHROMA_DIR,
+    use_cloud_storage=USE_CLOUD_STORAGE,
+    bucket_name=GCS_BUCKET_NAME
+)
 
 # Initialize persistence manager
 persistence_manager = PersistenceManager(
@@ -53,9 +59,63 @@ persistence_manager = PersistenceManager(
     bucket_name=GCS_BUCKET_NAME
 )
 
+# Function to list files from Google Cloud Storage
+def list_files_from_gcs(persistence_manager):
+    """
+    List files from Google Cloud Storage
+    
+    Args:
+        persistence_manager: PersistenceManager instance
+        
+    Returns:
+        List of file names
+    """
+    if not persistence_manager.use_cloud_storage or not persistence_manager.bucket:
+        return []
+    
+    try:
+        # List blobs with the specified prefix
+        blobs = list(persistence_manager.bucket.list_blobs(prefix="uploads/"))
+        
+        # Extract file names
+        file_names = []
+        for blob in blobs:
+            # Skip directory markers
+            if blob.name.endswith('/'):
+                continue
+                
+            # Extract file name from path
+            file_name = blob.name.replace('uploads/', '', 1)
+            if file_name:  # Ensure it's not empty
+                file_names.append(file_name)
+                
+        return file_names
+    except Exception as e:
+        logging.error(f"Error listing files from GCS: {str(e)}")
+        return []
+
 # Initialize session state
 if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = persistence_manager.load_files_info()
+    
+    # If using cloud storage, check for files in GCS that might not be in local records
+    if USE_CLOUD_STORAGE:
+        gcs_files = list_files_from_gcs(persistence_manager)
+        if gcs_files:
+            # Add files from GCS that aren't in the local records
+            existing_files = [f["name"] for f in st.session_state.uploaded_files]
+            for file_name in gcs_files:
+                if file_name not in existing_files:
+                    # Add to session state with placeholder doc_id
+                    st.session_state.uploaded_files.append({
+                        "name": file_name,
+                        "doc_id": "gcs_file",  # Placeholder
+                        "path": f"uploads/{file_name}"
+                    })
+            
+            # Save updated file info
+            persistence_manager.save_files_info(st.session_state.uploaded_files)
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "messages" not in st.session_state:
@@ -162,11 +222,10 @@ with st.sidebar:
                             uploaded_file.name
                         )
                         
-                        # Extract text from document
-                        document_text = get_document_text(file_path, uploaded_file.name)
-                        
-                        # Process document and add to vector store
-                        doc_id = process_document(document_text, uploaded_file.name, vector_store)
+                        # Process the document
+                        with st.spinner(f"Processing {uploaded_file.name}..."):
+                            document_text = get_document_text(uploaded_file.name, persistence_manager)
+                            doc_id = process_document(document_text, uploaded_file.name, vector_store)
                         
                         # Add to session state
                         st.session_state.uploaded_files.append({
@@ -199,14 +258,45 @@ with st.sidebar:
             st.session_state.current_page = total_pages
         if st.session_state.current_page < 1:
             st.session_state.current_page = 1
-            
-        # Display documents for current page
+        
+        # Calculate start and end indices
         start_idx = (st.session_state.current_page - 1) * st.session_state.docs_per_page
         end_idx = min(start_idx + st.session_state.docs_per_page, total_docs)
         
+        # Initialize selected file state if not exists
+        if "selected_file_index" not in st.session_state:
+            st.session_state.selected_file_index = None
+        if "selected_file_content" not in st.session_state:
+            st.session_state.selected_file_content = None
+        
+        # Display files as clickable buttons
         for i in range(start_idx, end_idx):
             file = st.session_state.uploaded_files[i]
-            st.write(f"{i+1}. {file['name']}")
+            if st.button(f"{i+1}. {file['name']}", key=f"file_{i}"):
+                # Set selected file index
+                st.session_state.selected_file_index = i
+                
+                # Get file content
+                try:
+                    file_content = get_document_text(file["name"], persistence_manager)
+                    st.session_state.selected_file_content = {
+                        "name": file["name"],
+                        "content": file_content
+                    }
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error loading file content: {str(e)}")
+        
+        # Display selected file content if available
+        if st.session_state.selected_file_content:
+            with st.expander(f"Content of {st.session_state.selected_file_content['name']}", expanded=True):
+                st.text(st.session_state.selected_file_content['content'])
+                
+                # Add a button to close the file view
+                if st.button("Close File View"):
+                    st.session_state.selected_file_content = None
+                    st.session_state.selected_file_index = None
+                    st.rerun()
         
         # Pagination controls
         if total_pages > 1:
@@ -425,3 +515,99 @@ if st.session_state.messages:
             st.session_state.conversation_context = []
             st.session_state.messages = []
             st.rerun()
+
+# Headless mode functionality
+def run_headless_mode():
+    """
+    Run the application in headless mode (without Streamlit UI)
+    This mode is useful for API-based or automated interactions
+    """
+    logging.info("Starting application in headless mode")
+    
+    # Initialize components
+    load_dotenv()
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+    if not GOOGLE_API_KEY:
+        logging.error("Google API key not found. Please set it in the .env file.")
+        sys.exit(1)
+    
+    genai.configure(api_key=GOOGLE_API_KEY)
+    
+    # Set up persistence directories
+    IS_CLOUD_RUN = os.environ.get('CLOUD_RUN_SERVICE', False)
+    GCS_BUCKET_NAME = os.environ.get('GCS_BUCKET_NAME', 'document-qa-storage')
+    
+    if IS_CLOUD_RUN:
+        DATA_DIR = "/tmp/data"
+        CHROMA_DIR = "/tmp/chroma_db"
+        USE_CLOUD_STORAGE = True
+        logging.info(f"Running in Cloud Run (headless), using GCS bucket: {GCS_BUCKET_NAME}")
+    else:
+        DATA_DIR = "data"
+        CHROMA_DIR = "chroma_db"
+        USE_CLOUD_STORAGE = False
+        logging.info("Running locally (headless), using local file storage")
+    
+    # Initialize vector store and persistence manager
+    vector_store = VectorStore(
+        persist_directory=CHROMA_DIR,
+        use_cloud_storage=USE_CLOUD_STORAGE,
+        bucket_name=GCS_BUCKET_NAME
+    )
+    persistence_manager = PersistenceManager(
+        data_dir=DATA_DIR,
+        use_cloud_storage=USE_CLOUD_STORAGE,
+        bucket_name=GCS_BUCKET_NAME
+    )
+    
+    # List files from storage
+    files_info = persistence_manager.load_files_info()
+    
+    # If using cloud storage, check for files in GCS that might not be in local records
+    if USE_CLOUD_STORAGE:
+        gcs_files = list_files_from_gcs(persistence_manager)
+        if gcs_files:
+            # Add files from GCS that aren't in the local records
+            existing_files = [f["name"] for f in files_info]
+            for file_name in gcs_files:
+                if file_name not in existing_files:
+                    # Add with placeholder doc_id
+                    files_info.append({
+                        "name": file_name,
+                        "doc_id": "gcs_file",  # Placeholder
+                        "path": f"uploads/{file_name}"
+                    })
+            
+            # Save updated file info
+            persistence_manager.save_files_info(files_info)
+    
+    # Log available files
+    logging.info(f"Available files: {[f['name'] for f in files_info]}")
+    
+    # Initialize Gemini model
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    generation_config = {
+        "temperature": 0.2,
+        "top_p": 0.95,
+        "top_k": 64,
+        "max_output_tokens": 4096,
+    }
+    
+    # Keep the application running
+    logging.info("Headless mode active. Application is running...")
+    try:
+        while True:
+            # In a real implementation, this would be replaced with an API endpoint
+            # that accepts queries and returns responses
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logging.info("Shutting down headless application")
+
+# Check if the script is run with the --headless flag
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Document Q&A Application")
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode without Streamlit UI")
+    args = parser.parse_args()
+    
+    if args.headless:
+        run_headless_mode()

@@ -3,19 +3,61 @@ from typing import List, Dict, Any
 import PyPDF2
 import docx
 import re
+import tempfile
+import logging
 
-def get_document_text(file_path: str, file_name: str) -> str:
+def get_document_text(file_name: str, persistence_manager) -> str:
     """
     Extract text from different document types (PDF, DOCX, TXT)
     
     Args:
-        file_path: Path to the document
         file_name: Name of the document
+        persistence_manager: PersistenceManager instance to access files
         
     Returns:
         str: Extracted text from the document
     """
     file_extension = os.path.splitext(file_name)[1].lower()
+    
+    # Get file content from local storage or Google Cloud Storage
+    if persistence_manager.use_cloud_storage and persistence_manager.bucket:
+        try:
+            # Try to get from GCS
+            blob_path = f"uploads/{file_name}"
+            blob = persistence_manager.bucket.blob(blob_path)
+            
+            if not blob.exists():
+                raise FileNotFoundError(f"File {file_name} not found in Google Cloud Storage")
+            
+            # Create a temporary file
+            with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                blob.download_to_filename(temp_file.name)
+                temp_path = temp_file.name
+            
+            # Extract text based on file type
+            try:
+                if file_extension == '.pdf':
+                    text = extract_text_from_pdf(temp_path)
+                elif file_extension == '.docx':
+                    text = extract_text_from_docx(temp_path)
+                elif file_extension == '.txt':
+                    text = extract_text_from_txt(temp_path)
+                else:
+                    raise ValueError(f"Unsupported file type: {file_extension}")
+            finally:
+                # Clean up temporary file
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                    
+            return text
+        except Exception as e:
+            logging.error(f"Error getting document from GCS: {str(e)}")
+            # Fall back to local storage
+    
+    # Try local storage
+    file_path = os.path.join(persistence_manager.uploads_dir, file_name)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"File {file_name} not found in local storage")
     
     if file_extension == '.pdf':
         return extract_text_from_pdf(file_path)

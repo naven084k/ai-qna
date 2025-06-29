@@ -1,21 +1,45 @@
-Here is my project requirement
+# Document Q&A Application Requirements
 
-Build a web application using python, streamlit, google gemini flash API, vector embedding technique
+## Core Functionality
 
-1) User should be able to upload a single file at a time and at max 5 files from the client. Each file length should be max 1 MB. Support file formats: PDF, DOCX, TXT
+1. Build a web application using Python, Streamlit, Google Gemini Flash 1.5 API, and vector embedding technique
 
-2) Use small CPU friendly models for vector embedding and use chroma DB for this.
+2. File Upload Capabilities:
+   - Support for PDF, DOCX, and TXT files
+   - Single file upload at a time
+   - Maximum 5 files total
+   - Maximum file size of 1 MB per file
 
-3) Document Processing: Extract text from documents and create embeddings
+3. Vector Embedding:
+   - Use small CPU-friendly models for vector embedding
+   - Use ChromaDB for vector storage
+   - Integrate ChromaDB with Google Cloud Storage for persistence
 
-4) Left panel should show the list of files uploaded so far and also number of documents uploaded and number of conversations happened so far. persist this information in JSON file for consistent storage
+4. Document Processing:
+   - Extract text from documents
+   - Create embeddings for efficient retrieval
 
-5) There should a QnA search functionality on the documents using google gemini flash 1.5 model. User can ask questions on existing documents as well. it is not necessary to upload a document.
+5. User Interface:
+   - Left panel showing list of uploaded files
+   - Display document count and conversation count
+   - Enable viewing file content when clicking on files in the sidebar
+   - Persist information in JSON files for consistent storage
+   - Files should be listed from Google Cloud Storage when available
 
-6) Any random queries shouldn't be answered. those queries shouldn't even go to google gemini
+6. Q&A Functionality:
+   - Use Google Gemini Flash 1.5 model for answering questions
+   - Allow questions on existing documents
+   - Use embeddings to identify relevant document chunks to send to Google Gemini
+   - Filter out random queries not related to documents
 
-7) There should be a single server for UI and backend for easy deployment
+7. Deployment:
+   - Single server for UI and backend for easy deployment
+   - Support for headless mode in Docker for API-based or automated interactions
 
-8) Add necessary .gitignore file
+8. Storage:
+   - Use Google Cloud Storage for storing uploaded files
+   - Use Google Cloud Storage for ChromaDB persistence
 
-9) Add necessary README.md file
+9. Additional Files:
+   - Add necessary .gitignore file
+   - Add comprehensive README.md file
