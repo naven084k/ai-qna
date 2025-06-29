@@ -28,5 +28,5 @@ EXPOSE 8501
 RUN useradd -m appuser
 USER appuser
 
-# Command to run the application
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Command to run the application in headless mode (no development buttons)
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true", "--server.enableCORS=false", "--server.enableXsrfProtection=false"]
