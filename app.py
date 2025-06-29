@@ -204,7 +204,7 @@ with st.sidebar:
     # Process uploaded file
     if uploaded_file is not None:
         # Check if maximum number of files is reached
-        if len(st.session_state.uploaded_files) >= 5:
+        if len(st.session_state.uploaded_files) >= 500:
             st.error("Maximum number of files (5) reached. Please remove some files before uploading more.")
         else:
             # Check file size (1MB = 1048576 bytes)
